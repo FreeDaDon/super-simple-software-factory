@@ -28,7 +28,7 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                description="Capture the incoming ask")) as ph:
         ph.log(input=prompt)
 
-    with run.phase(PhaseParams(name="build", kind="agent", owner="builder", retries=1,
+    with run.phase(PhaseParams(name="build", kind="agent", owner="builder",
                                description="Implement the request")) as ph:
         ph.call(AgentCall(output_type=BuildOutput, prompt=prompt,
                           gates=[gates.diff_matches_claims]))

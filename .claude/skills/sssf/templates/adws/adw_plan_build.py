@@ -13,7 +13,7 @@ Phases: engineer(request) -> planner -> builder -> git(commit)
 import argparse
 import sys
 
-from adw_modules import agents, gates, git_helper, session, utils
+from adw_modules import agents, gates, session, utils
 from adw_modules.data_types import AgentCall, BuildOutput, PhaseParams, PlanOutput
 
 REQUIRED_AGENTS = ["planner", "builder"]
@@ -32,6 +32,8 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                description="Turn the request into an implementable plan")) as ph:
         plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
                                  gates=[gates.artifacts_exist, gates.files_non_empty]))
+        run.declare_grader_edits(plan)      # pinned before any code exists
+        ph.log(may_modify=[e.path for e in plan.may_modify] or "none — existing tests locked")
 
     with run.phase(PhaseParams(name="build", kind="agent", owner="builder",
                                description="Implement the plan exactly")) as ph:
@@ -41,7 +43,7 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
     with run.phase(PhaseParams(name="commit", kind="code", owner="git",
                                description="Land the builder's changes, using the message it wrote")) as ph:
         message = build.commit_message or f"sssf({run.adw_id}): {build.summary}"
-        ph.log(sha=git_helper.commit_all(message), message=message)
+        ph.log(sha=run.commit(message), message=message)
 
     return run.finish()
 

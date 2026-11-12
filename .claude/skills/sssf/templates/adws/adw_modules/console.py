@@ -70,6 +70,13 @@ class Console:
                  f"{passed}/{len(self.results)} phases · {tokens:,} tokens · ${cost:.4f}")
         self._emit(escape(plain), level="info" if ok else "error", renderable=panel)
 
+    def handoff(self, branch: str, worktree: str, commands: list[str]) -> None:
+        """Where an isolated run's work is, and the exact commands to take or drop it."""
+        self._emit(f"[bold]work is on {escape(branch)}[/bold] [dim]({escape(worktree)}); "
+                   f"your checkout was not touched[/dim]")
+        for label, command in zip(("review", "merge", "discard"), commands):
+            self._emit(f"  [dim]{label:<8}[/dim] {escape(command)}")
+
     # ── phases ──────────────────────────────────────────────────────────────
     def phase_started(self, phase: Phase) -> None:
         self.phase_id, self.phase_name = phase.phase_id, phase.params.name

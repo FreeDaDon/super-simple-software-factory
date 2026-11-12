@@ -2,21 +2,21 @@
 
 Add or retune agents in `sssf.config.yaml`.
 
-## Retune model or thinking
+## Retune model or effort
 
 Edit the agent's entry in place:
 
 ```yaml
   - name: builder
-    model: google/gemini-3.6-flash   # ALWAYS provider/model-id
-    thinking: high                   # was medium
+    model: sonnet        # alias: fable | opus | sonnet | haiku — or a full id, claude-sonnet-5-5
+    effort: high         # was medium: low | medium | high | xhigh | max
 ```
 
-Write the model as `provider/model-id`, never a bare id. The same model is usually carried by several providers, and an ambiguous pattern raises in `agents.validate()` — grounding every agent that inherits it. See `references/config.md`.
+An alias always means the newest model of that family, so it moves when a new one ships. Pin a full id when you are comparing runs. Claude Code cannot list models, so `agents.validate()` only checks that the value looks like a Claude model; a well-formed id that does not exist fails on the agent's first call. Re-run `just demo` after editing the roster to find out cheaply. See `references/config.md`.
 
-Thinking levels are Pi's reasoning effort: `off | minimal | low | medium | high | xhigh | max`. It only bites when the model is registered with `reasoning: true` in `~/.pi/agent/models.json`.
+Everything runs on your Claude subscription, so model choice is a usage-limit decision: Opus drains the five-hour window several times faster than Sonnet, and Haiku barely registers.
 
-**A model change means a fresh session.** `agent_map.json` records the model each coding-agent session was created with. When a joined run (`--adw-id`) finds the config's model no longer matches the recorded one, that agent starts a **new** session rather than resuming — the map is updated, never a bad resume. Thinking changes do not invalidate a session; model changes do. Expect the agent to lose its accumulated context window on the first run after the change.
+**A model change means a fresh session.** `agent_map.json` records the model string each coding-agent session was created with. When a joined run (`--adw-id`) finds the config's model no longer matches the recorded one, that agent starts a **new** session rather than resuming — the map is updated, never a bad resume. Effort changes do not invalidate a session; model changes do. Expect the agent to lose its accumulated context window on the first run after the change.
 
 ## Recolor an agent's lane
 
@@ -29,60 +29,59 @@ Purely cosmetic and safe to change mid-project: the color rides the `agent_start
 
 ## Retune tools
 
-Pi's seven builtins: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`. The last three are **off in bare Pi**, so an agent that doesn't name them will shell out through `bash` to search and list.
+Claude Code's tool names, case-sensitive: `Read`, `Grep`, `Glob`, `Bash`, `Edit`, `Write`, plus `Agent` for subagents. `Glob` covers what `ls` and `find` did, so there is no separate tool for either.
 
 Set the roster-wide floor in `defaults`, then narrow per agent:
 
 ```yaml
 defaults:
-  tools: [read, bash, edit, write, grep, find, ls]
+  tools: [Read, Grep, Glob, Bash, Edit, Write]
 
 agents:
   - name: reviewer
     tools:                # explicit list wins over defaults
-      - read
-      - grep
-      - find
-      - ls
-      - bash
-      - write
+      - Read
+      - Grep
+      - Glob
+      - Bash
+      - Write
 ```
 
-**Resolution:** the agent's own list wins → else it inherits `defaults.tools` → else `None`, meaning all tools. An empty list is not "all tools"; it is a tool-less agent, and it will stall.
+The list is an allowlist and the agent runs under `--permission-mode dontAsk`: a tool not named is **denied**, not prompted for. A misspelled or wrong-case name (`read`, `ls`) is rejected by `agents.validate()` before anything spawns.
+
+**Resolution:** the agent's own list wins → else it inherits `defaults.tools` → else the default set (`Read, Edit, Write, Bash, Grep, Glob`). An empty list is not "all tools"; it is a tool-less agent, and it will stall.
 
 Narrow by role, not by reflex:
 
-- Any agent that must produce a `context_handoff/` artifact needs **`write`** — without it, it falls back to a `bash` heredoc to create the file the gate checks for.
-- Withhold `edit`/`write` only where the restriction *is* the guarantee. The reviewer's contract is "change nothing", so withholding `edit` makes that structural instead of merely prompted.
-- Recon agents should get the full read surface (`read`, `grep`, `find`, `ls`) — cheaper and more legible in the trace than the equivalent `bash` calls.
+- Any agent that must produce a `context_handoff/` artifact needs **`Write`** — without it, it falls back to a `Bash` heredoc to create the file the gate checks for.
+- Withhold `Edit`/`Write` only where the restriction *is* the guarantee. The reviewer's contract is "change nothing", so withholding `Edit` makes that structural instead of merely prompted. (`writes: []` is what actually enforces it.)
+- Recon agents should get the full read surface (`Read`, `Grep`, `Glob`) — cheaper and more legible in the trace than the equivalent `Bash` calls.
+- Add `Agent` to let an agent fan work out to Claude Code subagents. Their tool calls appear in the trace marked `subagent_of`.
 
-**Extension tools count against the allowlist.** `--tools` filters built-in, extension, and custom tools alike. Once an agent has a `tools` list — its own, or inherited from `defaults` — a tool registered by one of its `harness_engineering` extensions is dropped unless it is named there. Nothing errors: the extension loads, the run passes, the tool is just never offered. Any agent with a tool-registering extension must list that tool by name.
-
-## Add harness extensions
+## Add MCP servers
 
 ```yaml
     harness_engineering:
-      - .pi/extensions/json_guard.ts    # a pi extension FILE PATH
+      - adws/adw_data/harness_engineering/docs-mcp.json    # an MCP config FILE PATH
 ```
 
-Entries are pi extension **file paths**, passed through as `pi -e <path>`, applied to that agent only. Reach for an output-tightening extension when an agent keeps wrapping its envelope in prose and burning correction retries. The starter roster ships with none — this is an escape hatch, not a default.
+Entries are paths to MCP config JSON files, passed as `claude --mcp-config <path>`, applied to that agent only. Every call runs with `--strict-mcp-config`, so an agent with no entries has no MCP servers at all, whatever your own Claude Code has installed. The starter roster ships with none — this is an escape hatch, not a default.
 
-**Adding a tool-registering extension is a two-part edit.** The extension path goes in `harness_engineering`, *and* the tool name it registers goes in that agent's `tools` list:
+**Adding an MCP server is a two-part edit.** The config path goes in `harness_engineering`, *and* each tool you want the agent to use goes in its `tools` list as `mcp__<server>__<tool>`:
 
 ```yaml
   - name: reviewer
     harness_engineering:
-      - .pi/extensions/ast_query.ts     # registers tool: ast_query
+      - adws/adw_data/harness_engineering/docs-mcp.json     # defines server "docs"
     tools:
-      - read
-      - grep
-      - find
-      - ls
-      - bash
-      - ast_query                       # REQUIRED — or the extension loads and its tool is filtered out
+      - Read
+      - Grep
+      - Glob
+      - Bash
+      - mcp__docs__search                                   # REQUIRED — or the tool is never offered
 ```
 
-Skip the second half and it fails silently: extension loaded, run green, tool never available to the model. Extensions that only shape output or register flags — no new tool — need no `tools` change.
+Skip the second half and it fails quietly: server loaded, run green, tool never available to the model.
 
 ## Add a new agent
 

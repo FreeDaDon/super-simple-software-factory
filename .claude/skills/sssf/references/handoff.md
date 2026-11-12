@@ -33,6 +33,7 @@ class GenericOutput(EnvelopeBase):
 
 class PlanOutput(EnvelopeBase):
     commit_message: str = ""            # imperative git subject for the PLAN FILE itself
+    may_modify: list[GraderEdit] = []   # GraderEdit: {path, reason} — existing tests the build may change
 
 class BuildOutput(EnvelopeBase):
     changed_files: list[str] = []
@@ -56,6 +57,8 @@ class DocumentOutput(EnvelopeBase):
 
 **Each `commit_message` describes its own agent's work product, never the next one's**: `PlanOutput`'s covers the spec file, `BuildOutput`'s the code, `DocumentOutput`'s the write-up. A chain that commits once can use whichever fits; a chain that commits per step (`adw_simple_sdlc.py`) needs all three, and reusing one agent's sentence for another's diff is how a commit log starts lying.
 
+`may_modify` is the plan's declaration of which **existing** grader files (tests, test and build config; `defaults.grader_files`) the build is allowed to change, each with the reason the requested behaviour needs it. Paths are exact and repo-relative; a glob or an absolute path fails validation. It is declared before any code exists, so it cannot be tuned to turn a red suite green, and it is usually empty. The ADW pins it with `run.declare_grader_edits(plan)` into `{data_dir}/runs/{adw_id}.json`, outside anything an agent can write; a joined `adw_build.py` reads it back from there. See `references/config.md`, "The grader lock".
+
 There is no test output type: running the suite is a `kind="code"` phase, and its `QualityResult` reaches the next agent through `quality.as_envelope`.
 
 Two of these are adapters rather than agent reports — code shaped as an envelope so an agent can be handed a deterministic result through the same door: `VerifyOutput` (a lint/test block's result) and `ChangesOutput` (a captured `git diff`, from `changes.as_envelope`). The consuming agent cannot tell the difference, which is the point.
@@ -73,9 +76,9 @@ plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
 
 The user prompt asks for the shape; the type enforces it. They always travel as a pair, which is what lets one agent serve many calls — same system prompt, different user prompt + output type per call site. Output types live in code, never in `sssf.config.yaml`.
 
-**Parse failure is not a restart.** If the response doesn't parse or doesn't validate, the harness re-prompts the **same session** with a correction naming the required fields — bounded by `JSON_FIX_ATTEMPTS` in `agents.py` (2). Gate violations use the identical mechanism, bounded instead by the phase's `retries`. A cold restart would throw away the context that produced the near-miss.
+**Parse failure is not a restart.** If the response doesn't parse or doesn't validate, the harness re-prompts the **same session** with a correction naming the required fields — bounded by `JSON_FIX_ATTEMPTS` in `agents.py` (2). Gate violations use the identical mechanism, bounded instead by the phase's `retries` (default 1). A cold restart would throw away the context that produced the near-miss.
 
-In v1 there is no separate continue call to make: `agent_pi.run()` passes `--session-id`, which pi treats as create-or-continue, so running an agent and continuing it are the same call with the same id. Before parsing, the harness also tolerates a fenced `json` code block or prose wrapped around the object — but the prompt still asks for bare JSON, and every failed attempt is persisted as an invalid envelope row.
+There is no separate continue call to make: `agents.execute()` tracks whether the session already exists, so `agent_cc.run()` passes `--session-id` on the first send (which creates the session) and `--resume` on every later one. Running an agent and continuing it are the same call with the same id, and `--session-id` on an existing id is refused by the CLI, which is why the two flags are never mixed. If the recorded state is wrong anyway, the send corrects itself: "already in use" flips it to `--resume`, "No conversation found" flips it back to `--session-id`. A send that hits the subscription usage limit waits for the reset and resumes the same session with a short note, so it is not a restart either. Before parsing, the harness also tolerates a fenced `json` code block or prose wrapped around the object — but the prompt still asks for bare JSON, and every failed attempt is persisted as an invalid envelope row.
 
 ## Injecting the previous envelope
 
@@ -131,31 +134,33 @@ The `## Report` section shows the exact JSON shape of the declared output type �
 ## Session directory layout
 
 ```
+adws/adw_data/runs/{adw_id}.json   the run's pinned state: worktree, branch, baseline commit, may_modify, touched paths
 adws/adw_data/sessions/{adw_id}/
-├── agent_map.json          agent name → coding-agent session_id + model
+├── agent_map.json          agent name → coding-agent session_id + model (+ resolved_model)
 ├── context_handoff/        the ONE place agents write files for the agents that follow
 └── {agent_name}/
     ├── prompts/            exact prompts sent (system.md + user.md), saved before execution
-    ├── pi_sessions/        pi's own session state for this agent
-    ├── raw_output.jsonl    full JSONL stream from the coding agent, appended live
+    ├── raw_output.jsonl    full JSONL stream from the coding agent, appended live, secrets redacted
+    ├── raw_output.jsonl.stderr   the CLI's stderr, kept out of the stream
     └── envelope.json       the final valid-JSON response — captured, validated, persisted by code
 ```
 
-`session.ensure(cfg, adw_id)` mints or joins the id and creates these dirs. One `context_handoff/` per session, shared by every agent — the single location for cross-agent files.
+`session.ensure(cfg, adw_id)` mints or joins the id, creates (or re-enters) the run's git worktree, and creates these dirs. They live in the operator's checkout, not in the worktree, at absolute paths; the session dir is the one place besides the worktree that the sandbox leaves writable. One `context_handoff/` per session, shared by every agent — the single location for cross-agent files.
 
 ## agent_map.json and resuming
 
 ```json
 {
-  "planner": {"session_id": "sssf-a1b2c3d4-planner-9f2e",
-              "model": "google/gemini-3.6-flash", "coding_agent": "pi"},
-  "builder": {"session_id": "sssf-a1b2c3d4-builder-71ac",
-              "model": "google/gemini-3.6-flash", "coding_agent": "pi"}
+  "planner": {"session_id": "3f6c0a1e-8b7d-4c52-9a1f-2d5e7b9c4a10",
+              "model": "opus", "coding_agent": "claude_code"},
+  "builder": {"session_id": "a1659e36-a30c-43dc-92c0-86a0599b5dad",
+              "model": "sonnet", "resolved_model": "claude-sonnet-5-5",
+              "coding_agent": "claude_code"}
 }
 ```
 
 This map is the key that lets a later ADW rejoin each agent's **existing context window**. Run `adw_build.py --adw-id a1b2c3d4` after `adw_plan.py` and the builder resumes its own session rather than starting cold.
 
-The map records the model each session was created with. If config drift changes an agent's model, that agent starts a **fresh** session and the map is updated — never a bad resume. `agent_sessions` in `sssf.db` is the queryable mirror of this file.
+An agent's entry is written as soon as its first send runs, success or not, because the CLI creates the session as soon as it starts: a retry or a rejoined run resumes that context instead of orphaning it. `resolved_model` (the concrete id the alias resolved to) is added once the phase finishes. The map records the model each session was created with. If config drift changes an agent's model, that agent starts a **fresh** session and the map is updated — never a bad resume. `agent_sessions` in `sssf.db` is the queryable mirror of this file.
 
 **Files are the raw record; the db is the queryable mirror.** Losing `sssf.db` loses nothing that can't be rebuilt from `raw_output.jsonl`, `envelope.json`, and `agent_map.json`.

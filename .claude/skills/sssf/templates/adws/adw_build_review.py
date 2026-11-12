@@ -58,7 +58,7 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
         if i == MAX_REVISION_LOOPS:
             break
 
-        with run.phase(PhaseParams(name=f"revise_{i}", kind="agent", owner="builder", retries=1,
+        with run.phase(PhaseParams(name=f"revise_{i}", kind="agent", owner="builder",
                                    description="Close every blocking finding the reviewer named")) as ph:
             previous = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt, previous=review,
                                          gates=[gates.diff_matches_claims]))

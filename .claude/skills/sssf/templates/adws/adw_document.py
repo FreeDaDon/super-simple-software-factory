@@ -57,7 +57,7 @@ def main(prompt: str, base: str = "main",
                 f"— documenting runs after a build. Build something first, or point "
                 f"--base at the ref the work should be measured from.")
 
-    with run.phase(PhaseParams(name="document", kind="agent", owner="documenter", retries=1,
+    with run.phase(PhaseParams(name="document", kind="agent", owner="documenter",
                                description="Turn the captured diff into a write-up an engineer can read")) as ph:
         ph.call(AgentCall(output_type=DocumentOutput, prompt=prompt,
                           previous=changes.as_envelope(changeset, DOCUMENT_NOTES),

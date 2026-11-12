@@ -10,20 +10,22 @@ Extend `adws/adw_modules/` with new low-level logic.
 
 | Module | Owns |
 |---|---|
-| `data_types.py` | Every Pydantic model: `AgentCall`, `PhaseParams`, `Phase`, `EnvelopeBase` + one output type per agent call, the config models (`AgentConfig`, `SSSFConfig`), `EventRecord`, and `PiRequest`/`PiResult` |
-| `agents.py` | `load_config`, `validate`, resolving an entry → coding-agent interface + model + thinking + harness extensions |
-| `runner.py` | the `Run` object; `run.phase(PhaseParams)` context manager; `ph.call(AgentCall)` |
-| `agent_pi.py` | the Pi interface (v1) — non-interactive `pi -p --mode json`, JSONL stream tailed live, model resolved against `~/.pi/agent/models.json`; `--session-id` creates-or-continues, so running and continuing an agent are the same call |
-| `agent_cc.py` | the Claude Code interface — stubbed in v1, lands in v2 |
+| `data_types.py` | Every Pydantic model: `AgentCall`, `PhaseParams`, `Phase`, `EnvelopeBase` + one output type per agent call, `GraderEdit` (`PlanOutput.may_modify`), the config models (`AgentConfig`, `ConfigDefaults`, `SandboxConfig`, `SSSFConfig`), `EventRecord`, `GateReport`, and `AgentRequest`/`AgentResult` |
+| `agents.py` | `load_config`, `validate`, resolving an entry → coding-agent interface + model + effort + MCP configs |
+| `runner.py` | the `Run` object; `run.phase(PhaseParams)` context manager; `ph.call(AgentCall)`; `run.commit(message)` (stages only the paths agents touched), `run.declare_grader_edits(plan)`, `run.box()` (the sandbox prefix), the run budget; maintains `agent_map.json` |
+| `agent_cc.py` | the Claude Code interface — non-interactive `claude -p --output-format stream-json --verbose`, stream tailed live, prompt on stdin, model and tool names validated by shape; `--session-id` creates a session and `--resume` continues it, so a correction lands in the same context window; strips `ANTHROPIC_API_KEY` so runs stay on the subscription; watchdog (`AgentTimeout`), `--max-budget-usd` (`BudgetExhausted`), `rate_limit_event` folding (`RateLimited`); the process runs behind the sandbox prefix |
 | `gates.py` | validation gates over envelope claims |
 | `changes.py` | deterministic change capture: resolve the base ref, `git diff` into `context_handoff/changes.diff`, adapt the `ChangeSet` into an envelope an agent can be handed |
 | `prompts.py` | load system/user prompt refs from config, render placeholders |
-| `session.py` | mint or join `adw_id`, maintain `agent_map.json`, create session dirs incl. `context_handoff/` |
+| `session.py` | mint or join `adw_id`, prepare the run's worktree (`workspace.prepare`), build the `Run`, record the ADW process, finalize the trace on SIGTERM/SIGINT |
+| `workspace.py` | one git worktree per run on `sssf/<adw_id>`; makes config paths absolute before the chdir; pins baseline, `may_modify`, and touched paths in `{data_dir}/runs/<adw_id>.json`; the review/merge/discard commands |
+| `sandbox.py` | the bubblewrap argv prefix: read-only fs, empty `$HOME` plus the `sandbox.home_*` allowlists, checkout hidden, worktree and session dir writable |
+| `permissions.py` | byte-exact before/after snapshots (git trees plus gitignored `.env*`), HEAD pinning, `writes` / `protected_files` / `grader_files` enforcement, exact rollback |
+| `quality.py` | the deterministic test/lint/typecheck/build blocks (`test_spec()` … `SPECS`), `require(*names)` to refuse placeholders, run sandboxed with a scrubbed env |
 | `tracer.py` | append JSONL **and** insert every event into `sssf.db` as it happens |
-| `console.py` | the terminal narrative — every line printed also lands in the db as a `log` event, so the UI reads the same story; plain sequential lines, no spinners |
 | `console.py` | the rich stdout reporter — every line printed is ALSO traced as a `log` event (`{message, level}`) so the terminal and the swim-lane UI tell the same story |
-| `git_helper.py` | branch, status, diff, commit — the raw plumbing `changes.py` composes |
-| `utils.py` | safe subprocess env, logging, `resolve_prompt` |
+| `git_helper.py` | status, diff, `commit_paths` — the raw plumbing `changes.py` and `run.commit` compose |
+| `utils.py` | `operator_env` / `scrubbed_env` (credential-looking variables removed), `redact` (secret-shaped values out of the trace), `resolve_prompt` |
 
 ## Never `print()`
 
@@ -92,6 +94,8 @@ Rules that keep gates honest:
 - **Don't gate the ungateable.** Plan quality and code taste are a reviewer agent's job or a human's.
 
 A gate that returns a plain `list[str]` of violations still works — the harness adapts it — but it records no evidence for the items that passed, so prefer a `GateReport`.
+
+A gate that runs a command executes code an agent wrote, so do what `gates.tests_pass` does: an argv list (no shell), `cwd=run.repo_root`, prefixed with `run.box()`, and `env=utils.scrubbed_env()`.
 
 Reusable gates live in `gates.py`; genuine one-offs can be defined inline at the ADW call site and passed in `gates=[...]`.
 

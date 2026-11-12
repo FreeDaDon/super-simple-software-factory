@@ -38,8 +38,11 @@ Respond with ONLY valid JSON matching `PlanOutput` — no prose before or after:
   "summary": "<one sentence describing the plan>",
   "artifacts": ["<context_handoff_dir>/plan.md", "specs/<adw_id>_<slug>.md"],
   "commit_message": "<imperative one-line git subject for committing THIS PLAN DOCUMENT, not the work it describes — e.g. 'Add spec for the /health endpoint'>",
+  "may_modify": [{"path": "tests/test_api.py", "reason": "the request renames /status to /health, which this test asserts"}],
   "notes_for_next_agent": "<what the builder must know>"
 }
 ```
+
+`may_modify` is usually `[]`: list an existing test or test-config file only when the request cannot be met without changing it, one exact path per entry, no globs.
 
 Both `artifacts` entries are the paths you ACTUALLY wrote, `_v2` suffix and all. Gates open these files — a name you meant to use fails them.

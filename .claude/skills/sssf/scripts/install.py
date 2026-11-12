@@ -8,8 +8,8 @@ Usage:
     uv run <skill>/scripts/install.py [--force]
 
 Stamps: adws/ (modules + starter ADWs), adws/adw_data/prompt_engineering/
-(4 starter agents), adws/adw_sssf_config/sssf.config.yaml, .env.sample,
-.gitignore entries.
+(5 starter agents), adws/adw_data/harness_engineering/ (MCP config home),
+adws/adw_sssf_config/sssf.config.yaml, .env.sample, justfile, .gitignore entries.
 Existing files are skipped unless --force.
 """
 
@@ -22,12 +22,13 @@ TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
 
 GITIGNORE_ENTRIES = [
     "adws/adw_data/sessions/",
+    "adws/adw_data/runs/",
     "adws/adw_data/sssf.db*",
     ".env",
     # The ADWs are Python, so importing adw_modules writes bytecode next to it.
-    # Chains that end in a commit phase call `git add -A`, so without this a
-    # stamped repo commits its own .pyc files — 15 of them showed up in the
-    # first repo that was ever installed into from scratch.
+    # An earlier version committed with `git add -A`, and 15 .pyc files showed
+    # up in the first repo it was installed into. Commits now stage only paths
+    # agents touched, but bytecode still has no business in a repo.
     "__pycache__/",
     "*.pyc",
 ]
@@ -56,6 +57,22 @@ def ensure_gitignore(root: Path, stamped: list) -> None:
         with gitignore.open("a") as f:
             f.write("\n# sssf runtime\n" + "\n".join(missing) + "\n")
         stamped.append(f"{gitignore} (+{len(missing)} entries)")
+
+
+# Marker file -> the test command it implies. First match wins.
+TEST_RUNNERS = [
+    ("pyproject.toml", '["uv", "run", "pytest", "-q"]'),
+    ("pytest.ini", '["uv", "run", "pytest", "-q"]'),
+    ("bun.lock", '["bun", "test"]'),
+    ("bun.lockb", '["bun", "test"]'),
+    ("package.json", '["npm", "test"]'),
+    ("go.mod", '["go", "test", "./..."]'),
+    ("Cargo.toml", '["cargo", "test"]'),
+]
+
+
+def detect_test_command(root: Path) -> str:
+    return next((argv for marker, argv in TEST_RUNNERS if (root / marker).exists()), "")
 
 
 def main() -> int:
@@ -88,7 +105,15 @@ def main() -> int:
     if skipped:
         print(f"  skipped (already exist, use --force to overwrite): {len(skipped)}")
     print("\nnext steps:")
-    print("  1. cp .env.sample .env   # then set the key(s) your roster needs")
+    suggestion = detect_test_command(root)
+    print("  0. set your test command in adws/adw_modules/quality.py, test_spec():")
+    print(f"       argv={suggestion}    # detected from this repo — check it" if suggestion
+          else '       argv=["uv", "run", "pytest", "-q"]  (or bun test, npm test, go test ./...)')
+    print("     until you do, every ADW with a test phase refuses to start (the read-only")
+    print("     demos below still run)")
+    print("  1. claude auth status    # SSSF runs every agent on your Claude subscription;")
+    print("                           # sign in with `claude auth login` if needed. No API keys,")
+    print("                           # and leave ANTHROPIC_API_KEY unset (it would bill the API)")
     print("  2. just demo             # two cheap read-only runs, end to end")
     print("  3. just sessions         # what just happened")
     print("  4. just obs              # the trace UI, needs bun")

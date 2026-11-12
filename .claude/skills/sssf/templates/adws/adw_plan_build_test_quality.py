@@ -7,7 +7,7 @@
 Usage:
     uv run adws/adw_plan_build_test_quality.py "<prompt or path/to/prompt.md>" [--config adws/adw_sssf_config/sssf.config.yaml] [--adw-id a1b2c3d4]
 
-Phases: engineer(request) -> planner -> builder -> [code(verify) -> code(test) -> builder(fix)] bounded -> git(commit)
+Phases: engineer(request) -> planner -> builder -> [code(verify) -> builder(fix)] bounded -> git(commit)
 
 Verify and test are CODE, not agents. Their commands are known, so running them
 needs no judgement — only repairing them does. A failing block does not fail its
@@ -19,7 +19,7 @@ fails the run.
 import argparse
 import sys
 
-from adw_modules import agents, gates, git_helper, quality, session, utils
+from adw_modules import agents, gates, quality, session, utils
 from adw_modules.data_types import AgentCall, BuildOutput, PhaseParams, PlanOutput
 
 REQUIRED_AGENTS = ["planner", "builder"]
@@ -29,6 +29,7 @@ MAX_FIX_LOOPS = 3
 def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw_id: str | None = None) -> int:
     cfg = agents.load_config(config)
     agents.validate(cfg, REQUIRED_AGENTS)
+    quality.require(*quality.SPECS)
     run = session.ensure(cfg, adw_id)
 
     with run.phase(PhaseParams(name="request", kind="engineer", owner=run.engineer,
@@ -39,6 +40,8 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                description="Turn the request into an implementable plan")) as ph:
         plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
                                  gates=[gates.artifacts_exist, gates.files_non_empty]))
+        run.declare_grader_edits(plan)      # pinned before any code exists
+        ph.log(may_modify=[e.path for e in plan.may_modify] or "none — existing tests locked")
 
     with run.phase(PhaseParams(name="build", kind="agent", owner="builder",
                                description="Implement the plan exactly")) as ph:
@@ -50,40 +53,32 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
         ph.log(passed=result.passed, checks=f"{passed}/{len(result.checks)}",
                artifacts=", ".join(result.artifacts))
 
-    test_result = None
-    quality_result = None
+    # One phase runs every block — tests, lint, typecheck, build — so one result
+    # carries every failure back to the builder at once.
+    result = None
     for i in range(1, MAX_FIX_LOOPS + 1):
         with run.phase(PhaseParams(name=f"verify_{i}", kind="code", owner="quality",
-                                   description="Lint, typecheck, and build before testing")) as ph:
-            quality_result = quality.run_quality(run)
-            record(ph, quality_result)
+                                   description="Run tests, lint, typecheck and build in one pass")) as ph:
+            result = quality.run_quality(run)
+            record(ph, result)
 
-        # run_quality() already includes the test block; a repo that wants tests
-        # in their own phase can split them out the way this comment does.
-        test_result = quality_result
-
-        if quality_result.passed and test_result.passed:
-            break
-        if i == MAX_FIX_LOOPS:
+        if result.passed or i == MAX_FIX_LOOPS:
             break
 
-        # Whichever block failed becomes the builder's spec — verbatim command
-        # output, no parser standing between the failure and the fix.
-        broken = quality_result if not quality_result.passed else test_result
-        what = "verification" if not quality_result.passed else "tests"
-        with run.phase(PhaseParams(name=f"fix_{i}", kind="agent", owner="builder", retries=1,
-                                   description=f"Resolve the reported {what} failures")) as ph:
+        # The failures become the builder's spec — verbatim command output, no
+        # parser standing between the failure and the fix.
+        with run.phase(PhaseParams(name=f"fix_{i}", kind="agent", owner="builder",
+                                   description="Resolve the reported verification failures")) as ph:
             previous = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt,
-                                         previous=quality.as_envelope(broken, what),
+                                         previous=quality.as_envelope(result, "verification"),
                                          gates=[gates.diff_matches_claims]))
 
-    verified = (quality_result is not None and quality_result.passed
-                and test_result is not None and test_result.passed)
+    verified = result is not None and result.passed
     if verified:
         with run.phase(PhaseParams(name="commit", kind="code", owner="git",
                                    description="Commit the tested and quality-verified working tree")) as ph:
             message = previous.commit_message or f"sssf({run.adw_id}): {previous.summary}"
-            ph.log(sha=git_helper.commit_all(message), message=message)
+            ph.log(sha=run.commit(message), message=message)
 
     return run.finish(accepted=verified,
                       reason=f"verify/test never came back clean after {MAX_FIX_LOOPS} fix attempt(s)")

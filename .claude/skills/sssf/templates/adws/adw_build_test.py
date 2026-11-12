@@ -32,6 +32,7 @@ MAX_FIX_LOOPS = 3
 def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw_id: str | None = None) -> int:
     cfg = agents.load_config(config)
     agents.validate(cfg, REQUIRED_AGENTS)
+    quality.require("test")                 # no real test command, no run
     run = session.ensure(cfg, adw_id)
 
     def record(ph, result) -> None:
@@ -56,10 +57,12 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
             test = quality.run_tests(run)
             record(ph, test)
 
-        if test.passed:
+        # The last loop ends on a test, never on an unverified fix: a fix that
+        # ran after the final suite run would be paid for and scored red.
+        if test.passed or i == MAX_FIX_LOOPS:
             break
 
-        with run.phase(PhaseParams(name=f"fix_{i}", kind="agent", owner="builder", retries=1,
+        with run.phase(PhaseParams(name=f"fix_{i}", kind="agent", owner="builder",
                                    description="Repair what the suite reported, from its "
                                                "verbatim output")) as ph:
             previous = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt,

@@ -54,6 +54,8 @@ Out of scope: tag editing UI, tag filtering on the post list.
 
 Same idea, same scope. What changed is that "popularity" became a sort order, the files are named, and nobody has to guess where it stops.
 
+Naming an existing test file in "Done means" matters for more than clarity: existing tests are locked for the builder, and adding a case to `server.test.ts` modifies it. The planner declares it in `may_modify` only if the request says that file must change, so name it when it must; otherwise the builder puts the new test in a new file.
+
 ## Which ADW
 
 **If the engineer named one, launch that one.** Their call stands — no second-guessing, no "upgrading" them to a longer chain. If you think another fits better, say so in your own message and launch what they asked for.

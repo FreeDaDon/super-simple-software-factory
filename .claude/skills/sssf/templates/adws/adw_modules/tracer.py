@@ -1,6 +1,8 @@
 """Tracer: every event lands in JSONL and SQLite AS IT HAPPENS.
 
 Files are the raw record; sssf.db is the queryable mirror the UI polls.
+Payloads pass through utils.redact() first: tool results carry whatever an
+agent read, and the trace is served by a web UI.
 No push transport — the flow is always: agents -> sqlite -> web ui.
 WAL mode so the UI can read while ADW processes write.
 """
@@ -12,7 +14,7 @@ import sqlite3
 from pathlib import Path
 
 from .data_types import AgentConfig, EventRecord, GateReport, Phase
-from .utils import ensure_dir, new_id, now_iso
+from .utils import ensure_dir, new_id, now_iso, redact
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -124,13 +126,16 @@ class Tracer:
         event_id = f"evt_{new_id(12)}"
         ts = now_iso()
         line = {"event_id": event_id, "ts": ts, **record.model_dump()}
+        # Redacted once, here, so the JSONL and the db (and the UI) agree.
+        payload_json = redact(json.dumps(record.payload))
+        line["payload"] = json.loads(payload_json)
         with self.events_jsonl.open("a") as f:
             f.write(json.dumps(line) + "\n")
         self.conn.execute(
             "INSERT INTO events (event_id, adw_id, phase_id, parent_id, type, name,"
             " payload_json, tokens, started_at, ended_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (event_id, record.adw_id, record.phase_id, record.parent_id, record.type,
-             record.name, json.dumps(record.payload), record.tokens,
+             record.name, payload_json, record.tokens,
              record.started_at or ts, record.ended_at),
         )
         return event_id
@@ -163,6 +168,11 @@ class Tracer:
             ("success" if ok else "fail", now_iso(), adw_id),
         )
         self.processes_end_all(adw_id)   # nothing of this run is alive any more
+
+    def session_usage(self, adw_id: str) -> tuple[int, float]:
+        row = self.conn.execute("SELECT total_tokens, total_cost FROM sessions WHERE adw_id=?",
+                                (adw_id,)).fetchone()
+        return (int(row[0] or 0), float(row[1] or 0.0)) if row else (0, 0.0)
 
     def session_add_usage(self, adw_id: str, tokens: int, cost: float) -> None:
         self.conn.execute(
@@ -235,7 +245,7 @@ class Tracer:
             "INSERT INTO envelopes (envelope_id, adw_id, phase_id, agent, output_type,"
             " payload_json, valid, attempt, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (f"env_{new_id(12)}", phase.adw_id, phase.phase_id, agent, output_type,
-             payload_json, int(valid), attempt, now_iso()),
+             redact(payload_json), int(valid), attempt, now_iso()),
         )
 
     def gate_row(self, phase: Phase, gate: str, report: GateReport, attempt: int) -> None:

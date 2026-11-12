@@ -145,7 +145,7 @@ function contextFill(ctx: LaneContext): string {
 
 const NUM = new Intl.NumberFormat('en-US')
 
-// A live agent's model/thinking/color arrive on its agent_start event before
+// A live agent's model/effort/color arrive on its agent_start event before
 // any agent_sessions row exists; attribute each start to its phase's owner.
 const ownerStart = computed<Record<string, AgentStartPayload>>(() => {
   const ownerByPhase = new Map<string, string | null>(
@@ -199,7 +199,7 @@ const lanes = computed<Lane[]>(() => {
     out.push({
       id: `agent:${owner}`,
       label: owner,
-      // The model is the lane's whole story; thinking level lives in the
+      // The model is the lane's whole story; effort level lives in the
       // phase detail's agent config section.
       model: info?.model ?? start?.model ?? null,
       context: laneContext(info),

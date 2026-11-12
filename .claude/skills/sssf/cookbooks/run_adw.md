@@ -23,23 +23,18 @@ uv run adws/<recon-chain>.py "where is auth handled" --config path/to/other.conf
 
 The prompt is inline text or a file path. Launch in the background so you can poll while it works; the `adw_id` is printed on startup — capture it, everything else keys off it.
 
+Every run works in its own git worktree, `../.sssf-worktrees/<repo>-<adw_id>`, on branch `sssf/<adw_id>` cut from the checkout's HEAD. The engineer's checkout and its uncommitted changes are never touched (the run prints a note when there are some: they are not part of the run). The trace db and session files stay in the checkout. A chain that needs a real test command (`quality.require`) refuses to start, before spending anything, if `quality.py` still has the placeholder; report that verbatim rather than editing `quality.py` yourself.
+
 ### Listen for the roster
 
 The chain says *what runs*; the config says *who runs it*. **If the engineer references a roster, a config, or a model tier, pass it — do not fall through to the default.**
 
 ```bash
-just rosters                            # every roster on disk, and the model each agent runs
+ls adws/adw_sssf_config/                                          # every roster on disk
+grep -nE '^ *(- name|model):' adws/adw_sssf_config/<roster>.yaml  # who is in it, and on which model
 ```
 
-That prints the path to pass and who is in it, in one read:
-
-```
-adws/adw_sssf_config/sssf.config.yaml
-    planner     fireworks/accounts/fireworks/models/kimi-k3
-    builder     google/gemini-3.6-flash (inherited)
-adws/adw_sssf_config/sssf.frontier.config.yaml
-    planner     anthropic/claude-opus-5
-```
+That gives the path to pass and who is in it. An agent with no `model:` line inherits `defaults.model`.
 
 Read those from disk every time. Rosters are the engineer's to add, rename, and retune, so a name you remember from a doc is a guess.
 
@@ -64,7 +59,7 @@ Two things that bite:
 - **Never swap rosters on your own.** A different roster is a different cost and a different result. If the default's model looks wrong for the work, say so and let the engineer choose.
 - **Switching rosters mid-session breaks resumption.** `agent_map.json` records the model each coding-agent session was created with, so a joined run (`--adw-id`) whose config now names a different model starts that agent **fresh** instead of resuming its context window. That is deliberate — a bad resume is worse — but it means "plan on the frontier roster, then build on the default" costs the builder its accumulated context. Say so when you report it.
 
-`--adw-id` is optional on **every** ADW. Given one, the run joins that session if it exists or creates it pinned to exactly that id: same `sessions/{adw_id}/` dirs, same `context_handoff/`, envelopes appended, and each agent resumes its existing coding-agent context window via `agent_map.json`. That is how you chain ADWs — plan under one id, then build under the same id.
+`--adw-id` is optional on **every** ADW. Given one, the run joins that session if it exists or creates it pinned to exactly that id: same `sessions/{adw_id}/` dirs, same `context_handoff/`, envelopes appended, and each agent resumes its existing coding-agent context window via `agent_map.json`. That is how you chain ADWs — plan under one id, then build under the same id. A joined run also goes back into the same git worktree and branch, and reads back the baseline commit and the plan's `may_modify` list pinned in `adws/adw_data/runs/{adw_id}.json`; if that worktree has been removed, the join refuses and you start a new run.
 
 ## Observe
 
@@ -72,23 +67,23 @@ The trace db is `adws/adw_data/sssf.db`. It is WAL, so reads never block the run
 
 ```bash
 # where the run stands
-sqlite3 adws/adw_data/sssf.db \
+uv run adws/sssf.py query \
   "select seq, name, kind, owner, status, attempt from phases where adw_id='a1b2c3d4' order by seq;"
 
 # the live tail — cursor on rowid, same query the visualizer polls
-sqlite3 adws/adw_data/sssf.db \
+uv run adws/sssf.py query \
   "select rowid, type, name, started_at from events where adw_id='a1b2c3d4' and rowid > 0 order by rowid limit 50;"
 
 # why a phase failed
-sqlite3 adws/adw_data/sssf.db \
+uv run adws/sssf.py query \
   "select attempt, gate, passed, checks_json from gate_results where adw_id='a1b2c3d4';"
 
 # session-level status
-sqlite3 adws/adw_data/sssf.db \
+uv run adws/sssf.py query \
   "select adw_id, request, status, total_tokens from sessions order by started_at desc limit 5;"
 
 # what an agent actually did, slowest tool calls first
-sqlite3 adws/adw_data/sssf.db \
+uv run adws/sssf.py query \
   "select name, tokens, started_at, ended_at from events
    where adw_id='a1b2c3d4' and type='tool_call' order by ended_at desc limit 20;"
 ```
@@ -111,12 +106,18 @@ just procs <adw_id>      # what that phase is actually running, with pids
 just kill <adw_id>       # stop it — children first, then the workflow
 ```
 
-`processes` rows with `ended_at IS NULL` are the live ones. If `procs` shows a pi child but the phase has produced no `tool_call` events and its `raw_output.jsonl` is empty, the agent never got started properly — check the model resolves and that nothing is blocking the subprocess, rather than waiting it out. `just kill` verifies each pid still matches the command that was recorded before signalling, because pids get recycled.
+`processes` rows with `ended_at IS NULL` are the live ones. A quiet trace is not always a hang:
+
+- **Waiting on the subscription limit.** A `log` event named `rate_limited` says which agent hit the usage window and `waiting_until` when it resets. The run sleeps until then (plus a minute) and resumes the same session; that is working as designed, not stuck. A reset further away than `defaults.rate_limit_max_wait_seconds` (6 h) fails the phase instead, and the error says to rejoin later with `--adw-id`.
+- **A genuinely hung agent.** The watchdog kills a `claude` process with no output for `defaults.agent_idle_timeout_seconds` (15 min) or running past `agent_max_seconds` (1 h), and the phase fails with that reason. `just kill` is for when you want it gone sooner.
+- **An agent that never started.** If `procs` shows a `claude` child but the phase has no `tool_call` events and its `raw_output.jsonl` is empty, check that `claude auth status` still shows your login and that nothing is blocking the subprocess (a missing `bwrap` only warns; it does not block).
+
+`just kill` verifies each pid still matches the command that was recorded before signalling, because pids get recycled.
 
 A killed run marks itself `fail` and closes its process rows, so the trace never claims work is in flight that is already dead.
 
 ## Report
 
-Tell the engineer, in order: which chain and which roster you launched (name the config whenever it was not the default), which phase is running now (or which failed), phase statuses in sequence, and for a failure the gate violations or the error verbatim. Remember **every phase defaults to `fail`** — a phase showing `fail` may simply never have completed; `queued` means it never started. Don't dress up a partial run as a success.
+Tell the engineer, in order: which chain and which roster you launched (name the config whenever it was not the default), which phase is running now (or which failed), phase statuses in sequence, and for a failure the gate violations or the error verbatim. For a run that got as far as finishing, say where the work is: the run prints its branch and three commands (review, merge, discard). Nothing is merged into the engineer's branch; relay the commands and leave the merge to them. A run that failed mid-phase prints nothing, but its worktree and branch are still there, like every run's: `just worktrees` lists them. A run stopped by `max_run_cost_usd` (default $25 list-price equivalent) fails with that reason; say so rather than re-running. Remember **every phase defaults to `fail`** — a phase showing `fail` may simply never have completed; `queued` means it never started. Don't dress up a partial run as a success.
 
-For a visual live view, the visualizer app in the skill (`just obs`, or tmux sessions viz-api :4600 + viz-ui :4601) polls this same db — sessions as cards, runs as swim lanes, phases and tool calls drill-in. The sqlite queries above remain the headless equivalent.
+For a visual live view, the visualizer app in the skill (`just obs`, or tmux sessions viz-api :4600 + viz-ui :4601) polls this same db (bound to 127.0.0.1; `SSSF_VIZ_HOST` overrides it, with a warning, since the UI has no authentication) — sessions as cards, runs as swim lanes, phases and tool calls drill-in. The sqlite queries above remain the headless equivalent.

@@ -52,7 +52,7 @@
   <g class="n n1">
     <rect x="40" y="112" width="180" height="90" rx="12" fill="#0F172A" stroke="#38BDF8" stroke-width="2.2"/>
     <text filter="url(#ts5)" class="nd mono" x="130" y="148" text-anchor="middle">builder</text>
-    <text filter="url(#ts5)" class="lbl mono" x="130" y="172" text-anchor="middle">pi session</text>
+    <text filter="url(#ts5)" class="lbl mono" x="130" y="172" text-anchor="middle">claude session</text>
     <text filter="url(#ts5)" class="lbl mono" x="130" y="190" text-anchor="middle">context intact</text>
   </g>
 

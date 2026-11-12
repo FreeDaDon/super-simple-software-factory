@@ -6,7 +6,7 @@ argument-hint: "[install | create adw | run adw | update config | ...]"
 
 # Super Simple Software Factory (SSSF)
 
-Reusable combination of **agents plus code**: deterministic Python ADW scripts own sequencing, retries, and acceptance; coding agents (Pi in v1) work inside bounded phases; typed JSON envelopes carry context between them; everything streams into SQLite for the polled visualizer. Agent proposes, code disposes.
+Reusable combination of **agents plus code**: deterministic Python ADW scripts own sequencing, retries, and acceptance; coding agents (Claude Code, on the operator's Claude subscription) work inside bounded phases; typed JSON envelopes carry context between them; everything streams into SQLite for the polled visualizer. Agent proposes, code disposes.
 
 ## Startup
 
@@ -50,7 +50,7 @@ You run the system, observe the system, and help the user interact with it. **Yo
 | create a new ADW / workflow | [cookbooks/create_adw.md](cookbooks/create_adw.md) |
 | modify an existing ADW chain | [cookbooks/update_adw.md](cookbooks/update_adw.md) |
 | create the config / agent roster | [cookbooks/create_config.md](cookbooks/create_config.md) |
-| add or retune an agent (model, thinking, tools, prompts) | [cookbooks/update_config.md](cookbooks/update_config.md) |
+| add or retune an agent (model, effort, tools, prompts) | [cookbooks/update_config.md](cookbooks/update_config.md) |
 | extend adw_modules with new low-level logic | [cookbooks/update_modules.md](cookbooks/update_modules.md) |
 | run / monitor an ADW | [cookbooks/how_to_prompt_for_the_eng.md](cookbooks/how_to_prompt_for_the_eng.md) **first**, then [cookbooks/run_adw.md](cookbooks/run_adw.md) |
 | turn a request into an ADW prompt | [cookbooks/how_to_prompt_for_the_eng.md](cookbooks/how_to_prompt_for_the_eng.md) |
@@ -62,15 +62,15 @@ Deep specs, when needed: [references/config.md](references/config.md) · [refere
 1. **Validate before running** — every ADW declares `REQUIRED_AGENTS` and calls `agents.validate()` first; a missing/misnamed agent fails before anything spawns.
 2. **Typed outputs only** — every agent call pairs with a concrete `EnvelopeBase` subclass in `adw_modules/data_types.py`; parse failures re-prompt the same session (context intact), never restart.
    **The output contract is a synced triad**: (a) the type in `data_types.py`, (b) the JSON example in the agent's `user.md` `## Report` section, (c) `output_type=` at every call site. These are ONE contract — change any one, update all three in the same edit (grep the type name to find every call site).
-3. **Gates validate claims, not guesses** — `gate(envelope, run) -> list[str]` violations; failures return to the same session as corrections.
+3. **Gates validate claims, not guesses** — `gate(envelope, run) -> GateReport`: one `check(item, ok, note)` per thing it looked at, violations derived from the failed checks (a legacy gate returning a `list[str]` of violations still works, adapted by `agents._as_report`, but records no evidence). Violations return to the same session as corrections, one round by default (`PhaseParams.retries=1`).
 4. **Four-param rule** — any function with more than 4 parameters takes one concrete data type instead (`AgentCall`, `PhaseParams` are the pattern).
 5. **One agent, one prompt, one purpose** — identity lives in `system.md`; task shape (user prompt + output type) lives at the call site.
 6. **ADW scripts stay thin** — all low-level logic lives in `adw_modules/`.
 7. **Every phase earns a description** — one sentence on what it does and why, never a restatement of its name. It is the only intent the trace, the console, and the UI ever show; `commit_plan: "Commit the plan"` is rejected at construction, blank is too.
 8. **A known command is code, not an agent** — if you can write the invocation down (`bun test`, `ruff check`), it belongs in a `kind="code"` phase via `adw_modules/quality.py`. Agents are for the parts that need reading and deciding; failures come back to the builder as an envelope either way.
-9. **`tools:` is a capability list, `writes:` is the boundary** — `bash` runs anything (including `git checkout`) and `write` reaches any path, so a tool list can never make "this agent changes nothing" true. `writes:` per agent and `protected_files` in defaults are enforced in `adw_modules/permissions.py` after every agent call: unauthorized changes are rolled back and the phase dies. The session runtime under `data_dir` is always writable — a read-only agent is read-only with respect to the REPO, never mute.
+9. **`tools:` is a capability list, `writes:` is the boundary** — `bash` runs anything (including `git checkout`) and `write` reaches any path, so a tool list can never make "this agent changes nothing" true. `writes:` per agent and `protected_files` in defaults are enforced in `adw_modules/permissions.py` after every agent call: unauthorized changes are rolled back and the phase dies. Existing tests and test config (`grader_files`) are locked unless the plan declared them in `may_modify`; an agent `git commit` is undone and fails the phase. The session runtime under `data_dir` is always writable — a read-only agent is read-only with respect to the REPO, never mute.
 10. **Every ADW ends in `run.finish()`** — phases passing is not the same as the run being accepted. A test phase that ran a red suite succeeded at its job. Pass `accepted=` so the exit code, the session status, and the banner are decided together and cannot disagree.
 
 ## v1 scope
 
-Pi coding agent only (`coding_agent: pi`), default model `gemini-3.6-flash` via openrouter, thinking `medium`. `claude_code` is schema-valid but stubbed until v2. The visualizer app ships in a later pass — observe via sqlite queries until then.
+Every agent runs through the `claude` CLI (`coding_agent: claude_code`) on the operator's Claude subscription: no provider keys, and `ANTHROPIC_API_KEY` is stripped from the agent's environment so it cannot silently switch to API billing. Models are Claude aliases (`fable`, `opus`, `sonnet`, `haiku`) or full `claude-*` ids; effort is `low | medium | high | xhigh | max`. Agents run under `--permission-mode dontAsk` with an explicit tool allowlist. Every run works in its own git worktree on branch `sssf/<adw_id>` and never merges; agents and quality commands run inside a bubblewrap sandbox (Linux; warns and runs unsandboxed elsewhere). The visualizer app ships in `apps/visualizer/`; the sqlite queries remain the headless equivalent.

@@ -58,7 +58,7 @@ const phaseOutputs = computed(() =>
 )
 
 // The agent's configuration, carried on its phase's `agent_start` event.
-// Older rows carry only model/thinking — rows render what was recorded.
+// Older rows carry only model/effort — rows render what was recorded.
 const agentConfig = computed(() => {
   if (props.phase.kind !== 'agent') return null
   const start = phaseEvents.value.find((e) => e.type === 'agent_start')
@@ -99,14 +99,18 @@ const phaseUsage = computed<{ rows: UsageRow[]; partial: boolean } | null>(() =>
       rows: [{ label: 'total', tokens: end.tokens ?? 0, cost: payload.cost ?? 0, kind: 'total' }],
     }
   }
+  // Claude Code reports ONE cost per call, so the per-component costs are zero
+  // while the total is not. Show those rows as unknown (NaN → "—"), not as $0.
+  const costed = u.input_cost + u.output_cost + u.cache_read_cost + u.cache_write_cost > 0
+  const part = (n: number) => (costed || !u.total_cost ? n : NaN)
   const rows: UsageRow[] = [
-    { label: 'input', tokens: u.input_tokens, cost: u.input_cost },
-    { label: 'output', tokens: u.output_tokens, cost: u.output_cost },
+    { label: 'input', tokens: u.input_tokens, cost: part(u.input_cost) },
+    { label: 'output', tokens: u.output_tokens, cost: part(u.output_cost) },
   ]
   if (u.reasoning_tokens) {
     // Thinking bills at the output rate, so its share of the output cost is
     // exact arithmetic — but it is already INSIDE the output row above.
-    const share = u.output_tokens ? (u.output_cost * u.reasoning_tokens) / u.output_tokens : 0
+    const share = u.output_tokens && costed ? (u.output_cost * u.reasoning_tokens) / u.output_tokens : NaN
     rows.push({
       label: 'thinking',
       tokens: u.reasoning_tokens,
@@ -116,8 +120,8 @@ const phaseUsage = computed<{ rows: UsageRow[]; partial: boolean } | null>(() =>
     })
   }
   rows.push(
-    { label: 'cache read', tokens: u.cache_read_tokens, cost: u.cache_read_cost },
-    { label: 'cache write', tokens: u.cache_write_tokens, cost: u.cache_write_cost },
+    { label: 'cache read', tokens: u.cache_read_tokens, cost: part(u.cache_read_cost) },
+    { label: 'cache write', tokens: u.cache_write_tokens, cost: part(u.cache_write_cost) },
     { label: 'total', tokens: u.total_tokens, cost: u.total_cost, kind: 'total' },
   )
   return { rows, partial: false }
@@ -127,6 +131,7 @@ const NUM = new Intl.NumberFormat('en-US')
 
 /** Per-component costs run to fractions of a cent; four places keeps them real. */
 function money(n: number): string {
+  if (!Number.isFinite(n)) return '—'
   if (!n) return '$0'
   return n < 0.0001 ? '<$0.0001' : `$${n.toFixed(4)}`
 }
@@ -403,11 +408,11 @@ function togglePanel(id: string) {
                 {{ modelName(agentConfig.model) }}
               </span>
             </div>
-            <div v-if="agentConfig.thinking" class="cfg-row">
-              <span class="cfg-k">thinking</span>
+            <div v-if="agentConfig.effort" class="cfg-row">
+              <span class="cfg-k">effort</span>
               <span class="cfg-chip">
                 <Brain class="cfg-icon" :size="18" :stroke-width="2" />
-                {{ agentConfig.thinking }}
+                {{ agentConfig.effort }}
               </span>
             </div>
             <div v-if="agentConfig.tools !== undefined" class="cfg-row">

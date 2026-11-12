@@ -12,17 +12,27 @@ Writes `adws/adw_sssf_config/sssf.config.yaml` — creating the directory if nee
 
 ## The rule
 
-**One agent, one prompt, one purpose.** An entry defines who an agent *is*: its coding agent, model, thinking level, and exactly one system prompt plus one user prompt. How it gets *used* — the output type, a per-call user prompt override — lives at the ADW call site, never here.
+**One agent, one prompt, one purpose.** An entry defines who an agent *is*: its model, effort level, and exactly one system prompt plus one user prompt. How it gets *used* — the output type, a per-call user prompt override — lives at the ADW call site, never here.
 
 ## Schema
 
 ```yaml
 defaults:
-  coding_agent: pi                 # v1: pi only (claude_code is specced, stubbed until v2)
-  model: google/gemini-3.6-flash   # ALWAYS provider/model-id — a bare id is ambiguous
-  thinking: medium                 # off | minimal | low | medium | high | xhigh | max
-  harness_engineering: []          # pi extension names
+  coding_agent: claude_code        # every agent runs through the claude CLI on your subscription
+  model: sonnet                    # fable | opus | sonnet | haiku, or a full id like claude-sonnet-5-5
+  effort: medium                   # low | medium | high | xhigh | max
+  harness_engineering: []          # MCP config JSON paths (--mcp-config)
+  setting_sources: ""              # no settings layers; the repo's CLAUDE.md is still injected (from the run's baseline commit)
+  protected_files: [adws/adw_modules/, adws/adw_sssf_config/, "adws/adw_*.py", adws/conftest.py,
+                    .claude/, .github/, .env, "**/.env", .env.*, "**/.env.*"]
+  grader_files: ["**/test_*.py", "**/tests/**", "**/package.json", ...]   # existing ones locked unless the plan declares them
   data_dir: adws/adw_data          # runtime home: {data_dir}/sessions/{adw_id}/{agent_name}/
+  worktree_dir: ../.sssf-worktrees # one git worktree per run, on branch sssf/<adw_id>
+  sandbox: {enabled: true, home_readonly: [.local, ...], home_writable: [.claude, .claude.json, .cache, .npm]}
+  agent_idle_timeout_seconds: 900  # watchdog: kill a silent claude process
+  agent_max_seconds: 3600          # watchdog: kill a claude process that runs this long
+  max_run_cost_usd: 25             # list-price-equivalent cap for one run
+  rate_limit_max_wait_seconds: 21600   # longest wait for a subscription-limit reset
 
 observability:
   db: adws/adw_data/sssf.db        # tracer writes here; the UI polls it
@@ -30,9 +40,8 @@ observability:
 
 agents:
   - name: planner                  # ADW scripts name agents, never models
-    coding_agent: pi
-    model: google/gemini-3.6-flash
-    thinking: high
+    model: opus
+    effort: high
     color: "#a78bfa"               # optional hex — this agent's lane color in the visualizer
     purpose: Turn a request into a plan the builder can implement without asking questions.
     prompt_engineering:
@@ -40,17 +49,18 @@ agents:
       user: adws/adw_data/prompt_engineering/planner/user.md
 
   - name: scout
-    thinking: high                 # unset keys fall through to defaults
+    model: haiku
+    effort: low                    # unset keys fall through to defaults
     purpose: Find and report where things live; change nothing.
     prompt_engineering:
       system: adws/adw_data/prompt_engineering/scout/system.md
       user: adws/adw_data/prompt_engineering/scout/user.md
-    tools:                         # optional allowlist — omit the key entirely for all tools
-      - read
-      - bash
+    tools:                         # optional allowlist — omit the key to inherit defaults.tools
+      - Read
+      - Bash
 ```
 
-Every agent entry merges over `defaults`, so an entry only states what differs. Pi's builtin tools are `read`, `bash`, `edit`, `write` — a read-only recon agent gets `[read, bash]`; a builder omits `tools` altogether.
+The template (`templates/sssf.config.yaml`, which `make_config.py` copies) spells every list out in full; the abbreviated lines above are shape, not values to paste. Every agent entry merges over `defaults`, so an entry only states what differs. Tool names are Claude Code's and are case-sensitive: `Read`, `Grep`, `Glob`, `Bash`, `Edit`, `Write`, `Agent`. A read-only recon agent gets `[Read, Grep, Glob, Bash]`; a builder omits `tools` and inherits the roster default.
 
 ## After generating
 
@@ -58,4 +68,4 @@ Every agent entry merges over `defaults`, so an entry only states what differs. 
 2. Write `purpose` as one sentence and make the system prompt say the same thing — the two should not drift.
 3. Validate by running the smallest ADW that names your agents; a bad entry fails fast, before anything spawns.
 
-Full field-by-field spec, thinking-level mapping, and model resolution: `references/config.md`. Retuning an existing roster: `update_config.md`.
+Full field-by-field spec, effort levels, and model resolution: `references/config.md`. Retuning an existing roster: `update_config.md`.

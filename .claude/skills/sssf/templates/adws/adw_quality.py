@@ -22,6 +22,7 @@ REQUIRED_AGENTS: list[str] = []
 def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw_id: str | None = None) -> int:
     cfg = agents.load_config(config)
     agents.validate(cfg, REQUIRED_AGENTS)
+    quality.require(*quality.SPECS)
     run = session.ensure(cfg, adw_id)
 
     with run.phase(PhaseParams(name="request", kind="engineer", owner=run.engineer,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import subprocess
 from datetime import datetime, timezone
@@ -36,6 +37,46 @@ def operator_env() -> dict[str, str]:
     parts = [p for p in env.get("PATH", "").split(os.pathsep) if p and p != venv_bin]
     env["PATH"] = os.pathsep.join(parts)
     return env
+
+
+# Names of environment variables that hold credentials. Quality commands run
+# code an agent just wrote, so they get the operator's environment WITHOUT these:
+# a test file is all it takes to read os.environ and print it into a log.
+SECRET_ENV = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_PAT$|^AWS_|^GH_|"
+                        r"^GITHUB_|^ANTHROPIC_|^OPENAI_|^OPENROUTER_|DATABASE_URL|_DSN$)",
+                        re.IGNORECASE)
+
+
+def scrubbed_env() -> dict[str, str]:
+    """operator_env() minus every variable whose name says it is a credential."""
+    return {k: v for k, v in operator_env().items() if not SECRET_ENV.search(k)}
+
+
+# Secret-shaped values, replaced before anything reaches the trace (JSONL, db,
+# raw agent output). Agents read files; what they read rides back in tool
+# results, and the trace is shown by a web UI.
+_SECRET_VALUES = [
+    # Body limited to base64 plus (escaped) newlines, so inside serialized JSON
+    # the match stops at the closing quote and the document stays valid.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s\\]*(-----END [A-Z ]*PRIVATE KEY-----)?"),
+    re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=\-]{16,}"),
+    # KEY=value / "token": "value" — the shape of a .env line or a config entry.
+    re.compile(r"(?i)\b([A-Z0-9_]*(?:API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Z0-9_]*)"
+               r"(\\?[\"']?\s*[=:]\s*\\?[\"']?)(?=[^\s\"'\\]*[A-Za-z])([^\s\"'\\]{8,})"),
+]
+REDACTED = "[REDACTED]"
+
+
+def redact(text: str) -> str:
+    for pattern in _SECRET_VALUES[:-1]:
+        text = pattern.sub(REDACTED, text)
+    return _SECRET_VALUES[-1].sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
 
 
 def new_id(length: int = 8) -> str:

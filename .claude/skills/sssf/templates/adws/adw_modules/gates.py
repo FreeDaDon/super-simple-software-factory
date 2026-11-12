@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from .data_types import EnvelopeBase, GateReport
+from .utils import scrubbed_env
 
 TAIL_CHARS = 1000        # command output kept as evidence on a failure
 
@@ -95,14 +96,24 @@ def verdict_consistent(envelope: EnvelopeBase, run) -> GateReport:
     return report
 
 
-def tests_pass(command: str):
-    """Gate factory: the given shell command must exit 0."""
+def tests_pass(argv: list[str], timeout_seconds: int = 600):
+    """Gate factory: the given command (argv list, no shell) must exit 0.
+
+    Runs in the run's worktree, inside the sandbox, with credentials scrubbed
+    from the environment — it executes code an agent wrote.
+    """
+    label = " ".join(argv)
+
     def gate(envelope: EnvelopeBase, run) -> GateReport:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        try:
+            result = subprocess.run([*run.box(), *argv], cwd=run.repo_root, capture_output=True,
+                                    text=True, timeout=timeout_seconds, env=scrubbed_env())
+        except subprocess.TimeoutExpired:
+            return GateReport().check(label, False, f"timed out after {timeout_seconds}s")
         ok = result.returncode == 0
         note = f"exit {result.returncode}"
         if not ok:
             note += "\n" + (result.stdout + result.stderr)[-TAIL_CHARS:]
-        return GateReport().check(command, ok, note)
-    gate.__name__ = f"tests_pass({command})"
+        return GateReport().check(label, ok, note)
+    gate.__name__ = f"tests_pass({label})"
     return gate

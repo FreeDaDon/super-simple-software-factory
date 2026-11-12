@@ -19,17 +19,24 @@ adws/
 ├── adw_build_review.py          build → review: is this what was asked for? (not testing)
 ├── adw_document.py              write up the work just done, from git diff vs main
 ├── adw_simple_sdlc.py           plan → build → test → review → document; commits each product
+├── adw_quality.py, adw_plan_build_test_quality.py   test + lint + typecheck + build as code phases
+├── sssf.py                      trace queries and `kill`, stdlib only: `uv run adws/sssf.py query "<sql>"`
+├── conftest.py                  keeps a repo-root pytest from collecting the ADWs named *_test.py
 ├── adw_modules/                 ALL low-level logic — ADW scripts stay thin
 │   ├── data_types.py            AgentCall, PhaseParams, Phase, Envelope + one output type per agent call
-│   ├── agents.py                load_config, validate, resolve entry → interface + model + thinking
+│   ├── agents.py                load_config, validate, resolve entry → interface + model + effort
 │   ├── runner.py                the Run object: run.phase(PhaseParams) → ph.call(AgentCall)
-│   ├── agent_pi.py              Pi interface (v1)   ·   agent_cc.py  Claude Code (v2, stubbed)
+│   ├── agent_cc.py              Claude Code interface — `claude -p --output-format stream-json`
 │   ├── gates.py                 gate(envelope, run) -> GateReport — one check per item verified
 │   ├── changes.py               git diff vs a resolved base → ChangeSet → envelope for the documenter
+│   ├── quality.py               the known commands (test, lint, typecheck, build) — placeholders until you set them
+│   ├── permissions.py           what an agent may change: writes, protected_files, the grader lock
+│   ├── workspace.py, sandbox.py one git worktree per run; the bubblewrap box around agents and tests
 │   ├── prompts.py, session.py, tracer.py, console.py, git_helper.py, utils.py
 └── adw_data/
     ├── prompt_engineering/{agent}/{system.md,user.md}   tracked — edit prompts HERE, never in the skill
     │                                planner · builder · scout · reviewer · documenter
+    ├── runs/{adw_id}.json                               gitignored — the run's worktree, baseline, may_modify
     ├── sessions/{adw_id}/                               gitignored runtime
     │   ├── agent_map.json       agent → coding-agent session_id + model
     │   ├── context_handoff/     the one place agents write files for the agents that follow
@@ -37,7 +44,7 @@ adws/
     └── sssf.db                  gitignored SQLite trace db the visualizer polls
 ```
 
-**v1 runs Pi only.** `coding_agent: pi`, default model `gemini-3.6-flash`, thinking `medium`. `claude_code` is specced in the config and stubbed in the interface — it lands in v2.
+**Every agent runs through the `claude` CLI on your Claude subscription.** `coding_agent: claude_code`, default model `sonnet`, effort `medium`. No provider keys; `ANTHROPIC_API_KEY` is stripped from the agent's environment.
 
 ## The phase model
 
@@ -45,9 +52,9 @@ Every ADW run is a sequence of **phases**, each one `with run.phase(PhaseParams(
 
 - **engineer** — the human lane; today the system-input phase (who asked, and for what).
 - **agent** — `ph.call(AgentCall(...))`: prompt in → typed envelope out → gates verified.
-- **code** — deterministic steps that stand alone (git branch, git commit, migrate). Never buried inside an agent phase.
+- **code** — deterministic steps that stand alone (git commit, the test suite, migrate). Never buried inside an agent phase.
 
-**Success must be earned — every phase defaults to `fail`.** A clean exit flips it to success; agent phases additionally require the envelope to parse and all gates to come back green. A raise keeps it failed, records an error event, and aborts the run. `retries=N` on an agent phase buys extra gate-correction rounds through the same session before that raise happens.
+**Success must be earned — every phase defaults to `fail`.** A clean exit flips it to success; agent phases additionally require the envelope to parse and all gates to come back green. A raise keeps it failed, records an error event, and aborts the run. `retries=N` on an agent phase sets the gate-correction rounds through the same session before that raise happens (default 1).
 
 ## Envelopes
 
@@ -63,6 +70,8 @@ uv run adws/adw_plan_build.py requests/health.md --adw-id a1b2c3d4
 ```
 
 The prompt is inline text or a file path. `--adw-id` is optional on every ADW: given one, the run joins that session (same dirs, same `context_handoff/`, agents resume their existing context windows); omitted, a fresh id is minted and printed.
+
+**Every run works in its own git worktree** (`../.sssf-worktrees/<repo>-<adw_id>`, branch `sssf/<adw_id>`, cut from the checkout's HEAD), with agents and quality commands inside a bubblewrap sandbox. The engineer's checkout is never touched and nothing is merged: a finished run prints the commands to review, merge, or discard its branch. The trace db and session dirs stay in the checkout. A joined run goes back into the same worktree.
 
 ## When you have finished reading this
 

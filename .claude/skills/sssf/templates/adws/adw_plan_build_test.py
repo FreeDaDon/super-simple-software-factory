@@ -17,7 +17,7 @@ builder as an envelope, and only an exhausted fix loop fails the run.
 import argparse
 import sys
 
-from adw_modules import agents, gates, git_helper, quality, session, utils
+from adw_modules import agents, gates, quality, session, utils
 from adw_modules.data_types import AgentCall, BuildOutput, PhaseParams, PlanOutput
 
 REQUIRED_AGENTS = ["planner", "builder"]
@@ -27,6 +27,7 @@ MAX_FIX_LOOPS = 3
 def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw_id: str | None = None) -> int:
     cfg = agents.load_config(config)
     agents.validate(cfg, REQUIRED_AGENTS)
+    quality.require("test")                 # no real test command, no run
     run = session.ensure(cfg, adw_id)
 
     def record(ph, result) -> None:
@@ -42,6 +43,8 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                description="Turn the request into an implementable plan")) as ph:
         plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
                                  gates=[gates.artifacts_exist, gates.files_non_empty]))
+        run.declare_grader_edits(plan)      # pinned before any code exists
+        ph.log(may_modify=[e.path for e in plan.may_modify] or "none — existing tests locked")
 
     with run.phase(PhaseParams(name="build", kind="agent", owner="builder",
                                description="Implement the plan exactly")) as ph:
@@ -56,10 +59,12 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
             test = quality.run_tests(run)
             record(ph, test)
 
-        if test.passed:
+        # The last loop ends on a test, never on an unverified fix: a fix that
+        # ran after the final suite run would be paid for and scored red.
+        if test.passed or i == MAX_FIX_LOOPS:
             break
 
-        with run.phase(PhaseParams(name=f"fix_{i}", kind="agent", owner="builder", retries=1,
+        with run.phase(PhaseParams(name=f"fix_{i}", kind="agent", owner="builder",
                                    description="Repair what the suite reported, from its "
                                                "verbatim output")) as ph:
             previous = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt,
@@ -71,7 +76,7 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
         with run.phase(PhaseParams(name="commit", kind="code", owner="git",
                                    description="Land the code only after the suite came back green")) as ph:
             message = previous.commit_message or f"sssf({run.adw_id}): {previous.summary}"
-            ph.log(sha=git_helper.commit_all(message), message=message)
+            ph.log(sha=run.commit(message), message=message)
 
     return run.finish(accepted=test is not None and test.passed,
                       reason=f"the suite still failed after {MAX_FIX_LOOPS} fix attempt(s)")

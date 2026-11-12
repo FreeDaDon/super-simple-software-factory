@@ -2,7 +2,7 @@
 #
 # Deliberately small. These are the handful you need on day one: run something,
 # watch it, and open the trace. Add your own as your chains grow, and see the
-# example branch for the fuller set (orchestrator agents, kill, rosters, ipi).
+# example branch for the fuller set (orchestrator agents, rosters).
 
 # `.env` reaches every ADW through this, so keys work without exporting them.
 set dotenv-load
@@ -12,6 +12,7 @@ set positional-arguments
 # swaps the whole roster for one run.
 config := env_var_or_default("SSSF_CONFIG", "adws/adw_sssf_config/sssf.config.yaml")
 db     := "adws/adw_data/sssf.db"
+q      := "uv run adws/sssf.py query"
 
 # list every recipe
 default:
@@ -65,25 +66,33 @@ simple-sdlc *ARGS:
 
 # the last 10 runs
 sessions:
-    @sqlite3 {{db}} "select adw_id, status, substr(request,1,50), total_tokens, round(total_cost,4) from sessions order by started_at desc limit 10;"
+    @SSSF_DB={{db}} {{q}} "select adw_id, status, substr(request,1,50), total_tokens, round(total_cost,4) from sessions order by started_at desc limit 10;"
 
 # phase status in sequence: just phases <adw_id>
 phases ADW_ID:
-    @sqlite3 {{db}} "select seq, name, kind, owner, status, attempt from phases where adw_id='{{ADW_ID}}' order by seq;"
+    @SSSF_DB={{db}} {{q}} "select seq, name, kind, owner, status, attempt from phases where adw_id='{{ADW_ID}}' order by seq;"
 
 # the live event tail: just tail <adw_id>
 tail ADW_ID:
-    @sqlite3 {{db}} "select rowid, type, name, started_at from events where adw_id='{{ADW_ID}}' order by rowid desc limit 25;"
+    @SSSF_DB={{db}} {{q}} "select rowid, type, name, started_at from events where adw_id='{{ADW_ID}}' order by rowid desc limit 25;"
 
 # what a run has alive right now, with pids: just procs <adw_id>
 procs ADW_ID:
-    @sqlite3 {{db}} "select kind, name, pid, command, started_at from processes where adw_id='{{ADW_ID}}' and ended_at is null order by id;"
+    @SSSF_DB={{db}} {{q}} "select kind, name, pid, command, started_at from processes where adw_id='{{ADW_ID}}' and ended_at is null order by id;"
+
+# stop a run's live agent and workflow processes: just kill <adw_id>
+kill ADW_ID:
+    @SSSF_DB={{db}} uv run adws/sssf.py kill {{ADW_ID}}
+
+# every run's git worktree and branch (each run works in its own)
+worktrees:
+    git worktree list
 
 # ── observability UI ────────────────────────────────────────────────────────
 
 # Needs bun. The db path is passed explicitly because the server runs from the
 # app dir and would otherwise look for a trace db sitting next to itself.
 
-# boot the trace UI, http://localhost:4601 (api on :4600)
+# boot the trace UI, http://localhost:4601 (api on :4600, bound to 127.0.0.1)
 obs:
     cd .claude/skills/sssf/apps/visualizer && bun install && (SSSF_DB={{justfile_directory()}}/{{db}} bun run server/index.ts &) && bunx vite

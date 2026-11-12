@@ -9,6 +9,10 @@
  *   bun run server/index.ts
  *   bun run server/index.ts --db /path/to/repo/adws/adw_data/sssf.db
  *   SSSF_DB=/path/to/sssf.db PORT=4600 bun run server/index.ts
+ *
+ * Binds 127.0.0.1 only. The API is unauthenticated and serves tool-call args
+ * and results, which can hold secrets an agent read. SSSF_VIZ_HOST=0.0.0.0
+ * exposes it on purpose — put your own auth (SSH tunnel, VPN, proxy) in front.
  */
 import { existsSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -16,6 +20,8 @@ import { SssfDb, resolveDbPath } from "./db.ts";
 import type { AgentPrompts, ApiError, HealthResponse } from "../shared/types.ts";
 
 const PORT = Number(process.env.PORT ?? 4600);
+const HOST = process.env.SSSF_VIZ_HOST ?? "127.0.0.1";
+const LOOPBACK = /^(127\.\d+\.\d+\.\d+|::1|localhost)$/;
 const DIST_DIR = resolve(import.meta.dir, "..", "dist");
 
 const dbPath = resolveDbPath();
@@ -111,6 +117,7 @@ async function serveStatic(req: Request): Promise<Response> {
 }
 
 const server = Bun.serve({
+  hostname: HOST,
   port: PORT,
   routes: {
     "/api/health": safely(
@@ -198,7 +205,14 @@ const server = Bun.serve({
   },
 });
 
-console.log(`[sssf] visualizer api  http://localhost:${server.port}`);
+console.log(`[sssf] visualizer api  ${server.url}`);
+if (!LOOPBACK.test(HOST)) {
+  console.error(
+    `[sssf] WARNING: SSSF_VIZ_HOST=${HOST} is not loopback. This UI has NO authentication ` +
+      `and serves agent tool calls (which may contain secrets) to anyone who can reach ` +
+      `port ${server.port}. Firewall it or put auth in front.`,
+  );
+}
 console.log(`[sssf] db              ${db.path}  [journal_mode=${db.journalMode}]`);
 console.log(
   existsSync(DIST_DIR)

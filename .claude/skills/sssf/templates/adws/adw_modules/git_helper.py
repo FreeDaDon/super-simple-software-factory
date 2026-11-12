@@ -40,14 +40,20 @@ def repo_root() -> Path:
     return Path.cwd().resolve()
 
 
-def commit_all(message: str) -> str:
-    """Stage the working tree and commit it. Returns the new short sha."""
+def commit_paths(message: str, paths: list[str]) -> str:
+    """Stage exactly `paths` (additions, edits, deletions) and commit. Returns the short sha.
+
+    Never `git add -A`: a test run leaves lockfiles and caches behind, and in a
+    non-isolated checkout `-A` would sweep the operator's own uncommitted work
+    into an agent's commit.
+    """
     if not is_repo():
         raise RuntimeError(
             "not a git repository — a commit phase needs one. Run `git init` in the "
             "repo root (and make a first commit) before running an ADW that commits.")
-    _git("add", "-A")
-    if not _git("status", "--porcelain"):
+    if paths:
+        _git("add", "-A", "--", *paths)
+    if not _git("diff", "--cached", "--name-only"):
         raise RuntimeError("nothing to commit — the preceding phases changed no files")
     _git("commit", "-m", message)
     return _git("rev-parse", "--short", "HEAD")

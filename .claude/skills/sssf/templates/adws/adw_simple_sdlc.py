@@ -33,12 +33,13 @@ tested and approved.
 The code commit lands after verification, not straight after the build: fixes
 and revisions are part of the same work product, and red code has no business
 on the branch. A run that fails verification therefore leaves the plan
-committed and the working tree dirty — the spec is a real artifact either way,
-and the unfinished code stays where the engineer can see it.
+committed on `sssf/<adw_id>` and the unfinished code uncommitted in the run's
+worktree — the spec is a real artifact either way, and the code stays where
+the engineer can see it.
 
-The documenter measures against the commit this run STARTED from, not against
-`main`, because by then the run has moved `main` itself. That baseline is
-pinned before the first commit phase and printed in the request phase.
+The documenter measures against the commit this run STARTED from (the
+worktree's baseline), because by then the run has moved its own branch. That
+baseline is printed in the request phase.
 """
 
 import argparse
@@ -61,13 +62,14 @@ DOCUMENT_NOTES = ("Read diff_path in full before writing. Document only what the
 def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw_id: str | None = None) -> int:
     cfg = agents.load_config(config)
     agents.validate(cfg, REQUIRED_AGENTS)
+    quality.require("test")                 # no real test command, no run
     run = session.ensure(cfg, adw_id)
-    baseline = git_helper.rev("HEAD")     # pinned before this run commits anything
+    baseline = run.workspace.baseline or git_helper.rev("HEAD")   # pinned before any commit
 
     def commit(ph, envelope) -> None:
         """Commit what the preceding phase produced, in that agent's own words."""
         message = envelope.commit_message or f"sssf({run.adw_id}): {envelope.summary}"
-        ph.log(sha=git_helper.commit_all(message), message=message)
+        ph.log(sha=run.commit(message), message=message)
 
     def record(ph, result) -> None:
         """Log a deterministic block's verdict — the same shape every ADW uses."""
@@ -83,6 +85,8 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                description="Turn the request into an implementable plan")) as ph:
         plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
                                  gates=[gates.artifacts_exist, gates.files_non_empty]))
+        run.declare_grader_edits(plan)      # pinned before any code exists
+        ph.log(may_modify=[e.path for e in plan.may_modify] or "none — existing tests locked")
 
     with run.phase(PhaseParams(name="commit_plan", kind="code", owner="git",
                                description="Put the spec on record before any code exists to blur it")) as ph:
@@ -101,10 +105,12 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
             test = quality.run_tests(run)
             record(ph, test)
 
-        if test.passed:
+        # The last loop ends on a test, never on an unverified fix: a fix that
+        # ran after the final suite run would be paid for and scored red.
+        if test.passed or i == MAX_FIX_LOOPS:
             break
 
-        with run.phase(PhaseParams(name=f"fix_{i}", kind="agent", owner="builder", retries=1,
+        with run.phase(PhaseParams(name=f"fix_{i}", kind="agent", owner="builder",
                                    description="Repair what the suite reported, from its "
                                                "verbatim output")) as ph:
             build = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt,
@@ -113,7 +119,8 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
 
     review = None
     revised = False
-    for i in range(1, MAX_REVISION_LOOPS + 1):
+    # A reviewer on red tests is paid for a run that cannot be accepted.
+    for i in range(1, (MAX_REVISION_LOOPS if test.passed else 0) + 1):
         with run.phase(PhaseParams(name=f"review_{i}", kind="agent", owner="reviewer",
                                    description="Confirm the build matches the plan")) as ph:
             review = ph.call(AgentCall(output_type=ReviewOutput, prompt=prompt, previous=build,
@@ -122,7 +129,7 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
         if review.approved or i == MAX_REVISION_LOOPS:
             break
 
-        with run.phase(PhaseParams(name=f"revise_{i}", kind="agent", owner="builder", retries=1,
+        with run.phase(PhaseParams(name=f"revise_{i}", kind="agent", owner="builder",
                                    description="Close the reviewer's blocking findings")) as ph:
             build = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt, previous=review,
                                       gates=[gates.diff_matches_claims]))
@@ -160,7 +167,7 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                     f"nothing changed since {changeset.base.label} "
                     f"({changeset.base.reason}) — there is nothing to document.")
 
-        with run.phase(PhaseParams(name="document", kind="agent", owner="documenter", retries=1,
+        with run.phase(PhaseParams(name="document", kind="agent", owner="documenter",
                                    description="Write up the completed change")) as ph:
             document = ph.call(AgentCall(output_type=DocumentOutput, prompt=prompt,
                                          previous=changes.as_envelope(changeset, DOCUMENT_NOTES),

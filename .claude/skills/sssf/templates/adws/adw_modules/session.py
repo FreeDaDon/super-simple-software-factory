@@ -2,7 +2,8 @@
 
 `ensure(cfg, adw_id)` joins the session if it exists or creates it under
 exactly that id (pinned ids for repeatable runs); omitted, a fresh id is
-minted and printed so the next ADW can pick it up.
+minted and printed so the next ADW can pick it up. A new session gets its own
+git worktree (see workspace.py); a joined one goes back into it.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import signal
 import sys
 from pathlib import Path
 
+from . import workspace
 from .data_types import SSSFConfig
 from .runner import Run
 from .tracer import Tracer
@@ -37,9 +39,11 @@ def _finalize_when_killed(run: Run) -> None:
 
 def ensure(cfg: SSSFConfig, adw_id: str | None = None) -> Run:
     adw_id = adw_id or new_id(8)
+    engineer = engineer_name()                 # read git config before leaving the checkout
+    ws = workspace.prepare(cfg, adw_id)        # absolutizes cfg paths, then chdirs
     tracer = Tracer(cfg.observability.db,
                     f"{cfg.defaults.data_dir}/sessions/{adw_id}/events.jsonl")
-    run = Run(cfg=cfg, adw_id=adw_id, tracer=tracer, engineer=engineer_name())
+    run = Run(cfg=cfg, adw_id=adw_id, tracer=tracer, engineer=engineer, ws=ws)
     tracer.session_start(adw_id, run.engineer, adw_name=Path(sys.argv[0]).stem)
     # This process is the run. Record it before any phase opens, so a run that
     # hangs in its first agent call is still killable by adw_id.

@@ -6,7 +6,9 @@ The event schema, the seven SQLite tables, and the polling contract — the one 
 
 **Files are the raw record** (`raw_output.jsonl` streams, `envelope.json`, `agent_map.json`); **SQLite (`sssf.db`) is the queryable mirror** the UI reads. `tracer.py` writes both. Losing the db loses nothing that can't be rebuilt from files.
 
-Location comes from `observability.db` in `sssf.config.yaml`, default `adws/adw_data/sssf.db` — inside the **target** repo, gitignored.
+Location comes from `observability.db` in `sssf.config.yaml`, default `adws/adw_data/sssf.db` — inside the **target** repo, gitignored. It stays in the operator's checkout even though every run works in its own git worktree: the ADW makes the path absolute before it moves into the worktree, so all runs, concurrent ones included, write one db.
+
+**Secrets are redacted before they are stored.** Agents read files, and what they read rides back in tool results; the trace is then served by a web UI. So `utils.redact` replaces secret-shaped values (private key blocks, `sk-ant-…` / `sk-…` keys, AWS access key ids, GitHub tokens, Slack tokens, `Bearer …` headers, and `KEY=value` / `"token": "value"` shapes whose name says API key, secret, token, or password) with `[REDACTED]` in every event payload (the `events.jsonl` file and the db), every `envelopes` row, and every line of `raw_output.jsonl`. It is pattern-based: a secret with no recognisable shape gets through, so treat the trace as sensitive anyway.
 
 ## Event schema
 
@@ -20,30 +22,28 @@ Location comes from `observability.db` in `sssf.config.yaml`, default `adws/adw_
 | `handoff` | an envelope crosses from one agent to the next |
 | `gate_pass` | a gate found no failed checks — payload carries `attempt`, `checks` (the evidence), and an empty `violations` |
 | `gate_fail` | a gate found at least one failed check — payload carries `attempt`, `checks`, and `violations` |
-| `log` | an explicit `ph.log(...)` from the ADW script |
-| `agent_end` | the agent's run completes; envelope parsed or not — payload carries `cost`, `usage` (the per-component breakdown), `context_tokens`, `context_window` |
+| `log` | an explicit `ph.log(...)` from the ADW script, plus two the harness writes: `paths_touched` (payload `{agent, paths}` — what an agent changed, as verified by permission enforcement) and `rate_limited` (payload `{agent, waiting_until, wait_seconds, detail}` — the run is sleeping until the subscription window resets, then resumes the same session) |
+| `agent_end` | the agent's phase completes with a parsed envelope and green gates — payload carries `cost`, `usage` (the per-component breakdown), `resolved_model` (the concrete model id the CLI ran, e.g. what `sonnet` resolved to), `context_tokens`, `context_window` |
 | `phase_end` | the block exits; carries the resolved status |
-| `error` | a raise inside a phase block |
+| `error` | a raise inside a phase block; also `permission_breach` (an agent changed something it may not — payload names the agent, the error, its `writes`, and `protected_files`) and `not_accepted` (every phase passed but the ADW's acceptance test did not) |
 
 `parent_id` nests spans, so an agent phase expands into its tool-call spans in the UI.
 
-**Spend is itemised per phase.** `agent_end.usage` carries tokens *and* dollars for each component pi reports — `input`, `output`, `cache_read`, `cache_write` — summed across every send the phase made, so a phase that retried on a bad envelope or a failed gate shows what all its attempts cost, not just the last one. The four components sum to `total_tokens`, and their costs sum to `total_cost`; the visualizer's Cost panel renders them as a table you can add up by eye.
+**Spend is itemised per phase.** `agent_end.usage` carries tokens *and* dollars for the call — `input`, `output`, `cache_read`, `cache_write` — summed across every send the phase made, so a phase that retried on a bad envelope or a failed gate shows what all its attempts cost, not just the last one. The four token components sum to `total_tokens`. Claude Code reports **one cost per call**, not one per component, so only `total_cost` is filled and the per-component costs are zero (the visualizer shows them as `—`). On a subscription `total_cost` is the list-price **equivalent** of the tokens used, what the same call would cost on the API. It is a comparison figure, not a charge.
 
-`reasoning_tokens` is the thinking share and is **inside** `output_tokens`, not a fifth component — measured across every session on disk, reasoning never exceeds output and the four components always reconcile to the total. It bills at the output rate, so the panel nests it under output rather than adding it. Runs predating the breakdown have no `usage` key at all; the lump `cost` and the event's own `tokens` still stand, and the UI says so rather than rendering zeroes.
+`reasoning_tokens` is the thinking share (`output_tokens_details.thinking_tokens` in the CLI's usage block) and is **inside** `output_tokens`, not a fifth component. The panel nests it under output rather than adding it. Runs predating the breakdown have no `usage` key at all; the lump `cost` and the event's own `tokens` still stand, and the UI says so rather than rendering zeroes.
 
 **Context is occupancy, not spend.** `events.tokens` and `sessions.total_tokens` bill every turn, so they only grow — an agent that burned 100k tokens may be sitting in a 15k window. `context_tokens` is how full the window actually was when the agent stopped, which is what the visualizer's per-lane Context bar measures against `context_window`.
 
-It is computed the way pi computes it for its own footer and its auto-compaction trigger (`calculateContextTokens` in the coding agent's `core/compaction/compaction.ts`): take the last *valid* assistant turn — skipping `aborted` and `error` turns — and read `usage.totalTokens`, falling back to `input + output + cacheRead + cacheWrite`. Cache reads count; cached prompt is still prompt. `context_window` is the same `contextWindow` pi reads from `~/.pi/agent/models.json`, so `context_tokens / context_window` is the number pi would show. Both are NULL on rows written before the columns existed, and the lane draws no bar rather than a misleading empty one.
-
-Two caveats worth knowing. Pi adds an *estimate* for any messages trailing the last assistant usage; in a batch (`-p`) run the session ends on that message, so the two agree. And if auto-compaction fires as the very last act of a run, the recorded number is the pre-compaction size — pi itself reports `null` in that window rather than guessing.
+It is computed from the last assistant turn **on the agent's own thread** (a subagent's turns are not this agent's window): `input_tokens + cache_read_input_tokens + cache_creation_input_tokens + output_tokens` from that message's usage. Cache reads count; cached prompt is still prompt. `context_window` is the `contextWindow` Claude Code reports in the final `result` event's `modelUsage`, so `context_tokens / context_window` is how full the window was. Both are NULL on rows written before the columns existed, and the lane draws no bar rather than a misleading empty one.
 
 **Gates record evidence, not just a verdict.** A gate returns one `{item, ok, note}` check per thing it looked at, and `violations` are derived from the failed ones. Both land in `gate_results` (`checks_json` + `violations_json`) and in the `gate_pass`/`gate_fail` payload, so a green gate can answer *what did you verify* — `{"item": "…/plan.md", "ok": true, "note": "exists, 454B"}` — rather than only *did it pass*. Rows written before this existed have `checks_json` NULL; treat that as "no evidence recorded", not "nothing checked".
 
 The gate event payload carries `attempt` too, so the `gate_results` table and the event stream are equivalent sources — a live consumer can group gate results per correction round from events alone, without a second query.
 
-**A `tool_call` is the one event that spans time**, so it fills both `started_at` and `ended_at` on the row — the tool's real start and return. Every other type is a point in time: `started_at` is when it was recorded and `ended_at` stays NULL. Lay tool calls out on a time axis from those columns, never by parsing `payload_json` (`duration_ms` is in the payload too, as pi's own number, but it is a convenience, not the source for layout).
+**A `tool_call` is the one event that spans time**, so it fills both `started_at` and `ended_at` on the row — the tool's real start and return. Every other type is a point in time: `started_at` is when it was recorded and `ended_at` stays NULL. Lay tool calls out on a time axis from those columns, never by parsing `payload_json` (`duration_ms` is in the payload too, but it is a convenience, not the source for layout. Claude Code delivers messages whole, so `started_at` is when the message announcing the call arrived and the span includes that turn's overhead: accurate to the turn, not to the tool's own execution time).
 
-**Streaming is solved by construction.** `agent_pi.py` tails pi's JSONL stdout line by line and the tracer inserts each event into `sssf.db` **while the agent is still working** — never batched at phase end (verified in the first smoke run: tool calls visible mid-run). Everything downstream is a poll → render.
+**Streaming is solved by construction.** `agent_cc.py` tails `claude`'s stream-json stdout line by line and the tracer inserts each event into `sssf.db` **while the agent is still working** — never batched at phase end. Everything downstream is a poll → render.
 
 ## Tables
 
@@ -121,7 +121,7 @@ agent_sessions (                   -- the queryable mirror of agent_map.json
   coding_agent  TEXT, model TEXT, color TEXT,   -- color: the config's lane swatch
   session_id    TEXT,
   context_tokens INTEGER,           -- window occupancy after the agent's last turn
-  context_window INTEGER,           -- the model's ceiling, from the pi registry
+  context_window INTEGER,           -- the model's ceiling, from the CLI's result event
   created_at    TEXT, last_used_at TEXT,
   PRIMARY KEY (adw_id, agent)
 );
@@ -156,3 +156,7 @@ SELECT ... FROM events WHERE adw_id = ? AND rowid > ? ORDER BY rowid LIMIT 500;
 ```
 
 Keep the highest `rowid` returned as the next cursor. History is **the same queries** with filters, lazy-paged as the engineer scrolls or drills in — one mechanism serves both live and past runs, which is why there is no separate replay path.
+
+## The visualizer's address
+
+The visualizer API binds **127.0.0.1** only. It has no authentication and serves tool-call args and results, which can hold what an agent read even after redaction. To reach it from another machine, prefer an SSH tunnel; `SSSF_VIZ_HOST=0.0.0.0` binds it to every interface and prints a warning on startup saying so.

@@ -164,20 +164,23 @@ export interface AgentSession {
 /** Parsed `agent_start` payload — the live source of a lane's label and color. */
 export interface AgentStartPayload {
   model?: string;
-  thinking?: string;
+  effort?: string;
   session_id?: string;
   color?: string;
   coding_agent?: string;
   purpose?: string;
-  /** Tool allowlist; null means all tools. Absent on pre-config-payload rows. */
+  /** Claude Code tool allowlist. Absent on pre-config-payload rows. */
   tools?: string[] | null;
+  /** MCP config JSON paths passed as --mcp-config. */
   harness_engineering?: string[];
 }
 
 /**
  * Tokens and dollars per component for one agent phase, summed across every
- * send it made (a retried phase paid more than once). Mirrors pi's `usage`:
- * `input_tokens` EXCLUDES cache reads, which bill at their own rate.
+ * send it made (a retried phase paid more than once). Mirrors Claude Code's `usage`:
+ * `input_tokens` EXCLUDES cache reads. Claude Code reports one cost per call, so the
+ * per-component costs are zero and only `total_cost` (list-price equivalent on a
+ * subscription) is filled.
  */
 export interface UsageBreakdown {
   input_tokens: number;

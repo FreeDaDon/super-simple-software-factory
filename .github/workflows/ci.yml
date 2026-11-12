@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  skill:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .claude/skills/sssf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: git identity for the test repos
+        run: git config --global user.email ci@example.com && git config --global user.name ci
+      - name: compile templates
+        run: python3 -m compileall -q templates scripts
+      - name: pytest
+        run: uv run --with pytest --with pydantic --with pyyaml --with python-dotenv --with rich pytest tests -q
+
+  visualizer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .claude/skills/sssf/apps/visualizer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
