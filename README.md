@@ -462,11 +462,3 @@ Vibe coding is not knowing how your system works, and not looking. Agentic engin
 Master agentic coding by gaining a deeper understanding of the foundational units of the software factory.
 
 Learn tactical agentic coding patterns with [Tactical Agentic Coding](https://agenticengineer.com/tactical-agentic-coding?y=sssf).
-
-Follow the [IndyDevDan YouTube channel](https://www.youtube.com/@indydevdan) to improve your agentic coding advantage.
-
----
-
-Stay Focused and Keep Building
-
-- IndyDevDan
